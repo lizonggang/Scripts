@@ -1,0 +1,219 @@
+	
+一、简介
+
+innobackupex 是一个基于xtrabackup和tar4ibd的，它提供一个接口备份数据库服务器里的所有数据。
+innobackupex 是一个开源的用于MySQL的热备份实用程序，在备份的时候不会锁表。
+现在是支持3种引擎 InnoDB, XtraDB, MyISAM。
+
+
+
+二、安装（以CentOS为例）
+
+	a.yum -y install xtrabackup
+
+	b.源码包解压缩，设置环境变量
+
+		tar zxf percona-xtrabackup-2.0.8-587.tar.gz && mv percona-xtrabackup-2.0.8 /usr/local/xtrabackup
+		echo "PATH=\$PATH:/usr/local/xtrabackup/bin" >> /etc/profile
+        source /etc/profile
+
+
+
+三、参数说明
+
+--defaults-file
+	提供mysql配置文件的参数，唯一限制是它必须是第一个提供的参数。如果my.cnf在默认位置/etc/my.cnf 可不指定此参数。
+
+# innobackupex --defaults-file=/tmp/other-my.cnf --user=DBUSER --password=DBUSERPASS /path/to/BACKUP-DIR/
+
+--no-timestamp
+	不创建带时间戳格式的子目录，当加上这个参数，备份在/path/to/BACKUP-DIR/目录里完成。如果BACKUP-DIR目录存在会提示失败。
+
+# innobackupex --user=DBUSER --password=DBUSERPASS /path/to/BACKUP-DIR/ --no-timestamp
+
+# innobackupex --user=DBUSER --password=DBUSERPASS /path/to/BACKUP-DIR/
+/path/to/BACKUP-DIR/2014-08-25_00-00-09
+
+
+--user=USER
+	指定mysql用户。如果不指定--user=USER xtrabackup会假定数据库用户就是系统用户。
+
+--port=PORT
+	指定mysql端口。
+
+--socket=SOCKET
+	通过socket文件连接本地数据库。
+
+--host=HOST
+	连接指定hosts的数据库。
+
+	注意：多实例的情况下必须指定连接参数(--port、--socket、--host)，以便innobackupex跟数据库进行通信。
+
+--password=PASSWORD
+	指定密码，如果为空可以忽略此参数。
+
+
+# innobackupex --defaults-file=/tmp/other-my.cnf --user=DBUSER --password=DBUSERPASS /path/to/BACKUP-DIR/
+
+--databases=LIST
+	LIST可以分为如下情况：
+	1) 单个库 sg2
+	2) 多个库 "sg2 sg2_log"
+	3) "database-name1[.table_name1] database-name2[.table_name2] .."
+	4) 如果忽略此参数，所有库将被备份
+
+
+--apply-log
+	准备一个备份在BACKUP-DIR目录下通过名叫xtrabackup_logfile事务日志文件，位于同一目录中。此外,创建新的事务日志。
+	innobackupx 从默认的backup-my.cnf或者--default-file指定的配置文件读取配置创建备份。
+
+--redo-only
+	基于于全备份恢复和增量备份恢复应该使用此参数，除了最后一个增量备份。
+	跳过 rollback 阶段，只进行redo 阶段。
+
+--use-memory
+	指定多大的内存给xtrabackup进程使用。默认是100M 可以指定更大的内存。(e.g. --use-memory=2G）通常，指定更多的内存给进程越好。
+
+# innobackupex --apply-log --use-memory=2G /path/to/BACKUP-DIR
+
+--copy-back
+	根据my.cnf配置恢复一个备份到mysql服务器的datadir。
+
+--stream
+	流备份，打包成指定格式的文件。目前支持的格式有 tar和xbstream。
+
+--incremental
+	创建增量备份。
+
+--incremental-basedir=DIRECTORY
+	指定增量备份的基本目录，根据哪次备份做这次的增量备份。
+	
+--incremental-dir=DIRECTORY
+	指定增量备份的目录。
+
+
+数据恢复的过程包括两个阶段
+
+	1) 使各个数据文件处于一个一致性状态，这个过程叫做"准备(prepare)"。
+
+		当创建了备份后，备份数据没有准备好被恢复，它可能有一些没有提交的事物，或者有一些重做日志，在这个阶段使数据保存一致性。这个阶段完成后，数据可以使用进行恢复。
+
+		# innobackupex --apply-log /path/to/BACKUP-DIR
+
+		# innobackupex --apply-log --use-memory=4G /path/to/BACKUP-DIR
+
+		重做已提交的事物从日志文件里，(在备份进行时一些事物已经完成，回滚未提交的)，重新创建日志文件。
+
+	2) 拷贝数据文件到datadir的过程，这个过程叫做"恢复(recovery)"。
+
+		# innobackupex --copy-back /path/to/BACKUP-DIR
+
+		复制备份中和数据相关的文件到mysql server的datadir。
+
+			注意: 
+					1) 恢复之前需要关闭mysql server。
+					2) datadir 必须为空。--copy-back不会拷贝覆盖已存在的文件。
+					3) 恢复之后需要修改mysql的目录权限。 # chown -R mysql:mysql /data/mysql/
+
+
+
+增量备份：
+
+	注意：增量备份只作用于xtraDB,InnoDB引擎，对于MyISAM每次的增量备份则是全备份。
+
+首先，需要一个全备份为基础进行随后的增量备份。
+
+# innobackupex /data/backups/full --no-timestamp 
+
+进行第一次增量备份：
+
+# innobackupex --no-timestamp --incremental --incremental-basedir=/data/backups/full /data/backups/inc-1
+
+进行第二次增量备份：
+
+# innobackupex --no-timestamp --incremental --incremental-basedir=/data/backups/inc-1 /data/backups/inc-2
+
+
+
+
+增量恢复:
+
+	1.停服，并把datadir目录清空
+	
+	准备阶段和全备份略有不同。
+
+		a.已提交的事务必须在每个备份里重做。这将合并全备份和增量备份。
+		b.必须回滚未提交的事物。
+
+准备阶段：
+
+# innobackupex --apply-log --redo-only /data/backups/full
+
+现在第一次增量备份可以应用到全备份中。
+
+# innobackupex --apply-log --redo-only /data/backups/full --incremental-dir=/data/backups/inc-1
+
+在这个时候 /data/backups/full数据中包含第一次增量备份，完整的备份总会备份到/data/backups/full 目录中。
+
+进行第二次增量备份到全备份中。
+
+# innobackupex --apply-log /data/backups/full --incremental-dir=/data/backups/inc-2
+
+
+	注意：
+		应该使用--redo-only 进行合并增量备份，除了最后一次。
+		即使在最后一步骤中使用了 --redo-only备份数据仍然是一致的，但是服务器会执行回滚阶段。
+
+一旦基础数据里有所有的增量备份，可以准备回滚未提交的事物。
+
+# innobackupex --apply-log /data/backups/full
+
+恢复阶段：
+
+	准备增量备份完成后,基础目录就是一个完整的备份。我们进行数据恢复：
+
+innobackupex --copy-back /data/backups/full
+
+恢复完成后，我们还需要修改datadir的权限，启动mysql 服务。这样一次增量备份的还原就完成了。
+
+
+
+
+部分备份:
+
+我们可以备份指定的表或者库。表必须在单独的表空间。
+
+# innobackupex --include='^mydatabase[.]mytable' --no-timestamp /path/to/backup/mytable
+
+
+# echo "mydatabase.mytable" > /tmp/tables.txt
+# innobackupex --tables-file=/tmp/tables.txt --no-timestamp /path/to/backup/mytable
+
+由文本文件/tmp/tables.txt 提供表的信息，可多行，每行一个，databasename.tablename 这样的格式。
+
+
+--databases
+	
+这个参数接受以空格分隔的列表，库和表的备份。格式 databasename.[.tablename] 
+
+# innobackupex --no-timestamp --databases="mydatabase.mytable mysql" /path/to/backup/
+
+
+
+# 加密备份:
+
+# 高级特性
+
+	a.流模式
+
+	# innobackupex --stream=tar --no-timestamp /tmp/all >/tmp/out.tar
+
+	注意：解压归档时必须用 -i 参数。
+
+		例如：tar -xizf out.tar
+
+
+innobackupex --compress --stream=tar --no-timestamp /tmp/all >/tmp/out.tar
+
+--target-dir
+
